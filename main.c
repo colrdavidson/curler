@@ -110,8 +110,10 @@ int main(int argc, char **argv) {
     }
 
     // Handle alignment leftovers
+    size_t new_leftovers = file_size - i - 1;
+
     w_idx = 0;
-    for (; w_idx < leftover_size - 1; w_idx++) {
+    for (; w_idx < new_leftovers; w_idx++) {
         if (mem[i] == '\r' && mem[i+1] == '\n') {
             buffer[w_idx] = '\n';
             i++;
