@@ -3,9 +3,43 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <string.h>
+#include <assert.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <limits.h>
+
+typedef struct {
+    int fd;
+
+    char *data;
+    size_t len;
+    size_t cap;
+} FileBuffer;
+
+static void buffer_flush(FileBuffer *b) {
+    write(b->fd, b->data, b->len);
+    b->len = 0;
+}
+
+static void buffer_write(FileBuffer *b, char *data, size_t size) {
+    assert(size < b->cap);
+
+    if (b->len + size > b->cap) {
+        buffer_flush(b);
+    }
+
+    memcpy(b->data + b->len, data, size);
+    b->len += size;
+}
+
+static FileBuffer buffer_init(int fd, size_t cap) {
+    return (FileBuffer){
+        .fd = fd,
+        .data = malloc(cap),
+        .len = 0,
+        .cap = cap
+    };
+}
 
 int main(int argc, char **argv) {
     if (argc != 2) {
@@ -45,8 +79,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int buffer_size = 512 * 1024;
-    char *buffer = malloc(buffer_size);
+    FileBuffer buf = buffer_init(out_fd, 512 * 1024);
 
     size_t i = 0;
 
@@ -69,66 +102,57 @@ int main(int argc, char **argv) {
     #define has_zero(x) (((x)-(uint64_t)(0x0101010101010101)) & ~(x)&(uint64_t)(0x8080808080808080))
 
     // Loop for the happy path, we should fit nicely in registers here
-    size_t w_idx = 0;
     while (i < trunc_size) {
 
         uint64_t chunk;
-        memcpy(&chunk, mem + i, sizeof(chunk));
-        uint64_t xor_chunk = chunk ^ cr_mask;
+        if ((i % 8) == 0 && (i + 8) <= trunc_size) {
+            printf("skip-chunking %zu\n", i);
+            memcpy(&chunk, mem + i, sizeof(chunk));
+            uint64_t xor_chunk = chunk ^ cr_mask;
 
-        // Flush first, so we don't overrun
-        if (w_idx + 8 > buffer_size) {
-            write(out_fd, buffer, w_idx);
-            w_idx = 0;
-        }
-
-        // There are no carriage returns here
-        if (!has_zero(xor_chunk)) {
-            memcpy(buffer + w_idx, &chunk, sizeof(chunk));
-            i += 8;
-            w_idx += 8;
-        } else {
-            size_t start = i;
-            while (i < start + 8) {
-                if (mem[i] == '\r' && mem[i+1] == '\n') {
-                    buffer[w_idx] = '\n';
-                    i++;
-                } else {
-                    buffer[w_idx] = mem[i];
-                }
-                w_idx++;
-                i++;
+            // There are no carriage returns here
+            if (!has_zero(xor_chunk)) {
+                buffer_write(&buf, (char *)&chunk, sizeof(chunk));
+                i += 8;
+                continue;
             }
         }
+
+        while (i < trunc_size) {
+            printf("stepping %zu\n", i);
+            if (mem[i] == '\r' && mem[i+1] == '\n') {
+                buffer_write(&buf, "\n", 1);
+                i++;
+            } else {
+                buffer_write(&buf, &mem[i], 1);
+            }
+            i++;
+
+            if ((i % 8) == 0) break;
+        }
     }
-    // If there's anything left in the buffer, flush it now
-    if (w_idx != 0) {
-        write(out_fd, buffer, w_idx);
-    }
-    if (i == file_size) {
+    if (trunc_size == file_size) {
         goto end;
     }
 
     // Handle alignment leftovers
+    assert(file_size > i);
     size_t new_leftovers = file_size - i - 1;
 
-    w_idx = 0;
-    for (; w_idx < new_leftovers; w_idx++) {
+    for (; i < file_size; i++) {
         if (mem[i] == '\r' && mem[i+1] == '\n') {
-            buffer[w_idx] = '\n';
+            buffer_write(&buf, "\n", 1);
             i++;
         } else {
-            buffer[w_idx] = mem[i];
+            buffer_write(&buf, &mem[i], 1);
         }
         i++;
     }
-    // If we didn't end on a \r\n, make sure we grab the last char
-    if (i != file_size) {
-        buffer[w_idx++] = mem[i];
-    }
-    write(out_fd, buffer, w_idx);
 
 end:
+    // If there's anything left in the buffer, flush it now
+    buffer_flush(&buf);
+
     if (rename(tmp_name, argv[1])) {
         printf("Failed to move tmp!\n");
         return 1;
