@@ -106,7 +106,6 @@ int main(int argc, char **argv) {
 
         uint64_t chunk;
         if ((i % 8) == 0 && (i + 8) <= trunc_size) {
-            printf("skip-chunking %zu\n", i);
             memcpy(&chunk, mem + i, sizeof(chunk));
             uint64_t xor_chunk = chunk ^ cr_mask;
 
@@ -119,7 +118,6 @@ int main(int argc, char **argv) {
         }
 
         while (i < trunc_size) {
-            printf("stepping %zu\n", i);
             if (mem[i] == '\r' && mem[i+1] == '\n') {
                 buffer_write(&buf, "\n", 1);
                 i++;
